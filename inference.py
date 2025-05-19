@@ -19,7 +19,7 @@ from utils.inference_utils import load_model, read_video, inference, get_grid_qu
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_QUERY_GRID_SIZE = 32
+DEFAULT_QUERY_GRID_SIZE = 32 # 默认查询网格大小（如果没有预先确定查询点）
 
 class Arguments(tap.Tap):
     input_path: str

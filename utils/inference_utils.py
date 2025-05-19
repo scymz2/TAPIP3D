@@ -115,15 +115,15 @@ def inference(
     query_point: torch.Tensor,
     num_iters: int = 6,
     grid_size: int = 8,
-    bidrectional: bool = True,
-    vis_threshold = 0.9,
+    bidrectional: bool = True, # 双向追踪（正序+反序）
+    vis_threshold = 0.9,       # 可见性阈值
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    _depths = depths.clone()
-    _depths = _depths[_depths > 0].reshape(-1)
-    q25 = torch.kthvalue(_depths, int(0.25 * len(_depths))).values
-    q75 = torch.kthvalue(_depths, int(0.75 * len(_depths))).values
-    iqr = q75 - q25
-    _depth_roi = torch.tensor(
+    _depths = depths.clone() # clone会保留计算图，也就是于原张量的梯度关联，但是内存独立
+    _depths = _depths[_depths > 0].reshape(-1) # 过滤无效值并展平
+    q25 = torch.kthvalue(_depths, int(0.25 * len(_depths))).values # 找到第25%的值， 四分位数
+    q75 = torch.kthvalue(_depths, int(0.75 * len(_depths))).values # 找到第75%的值， 四分位数
+    iqr = q75 - q25 # 计算四分位间距（IQR）
+    _depth_roi = torch.tensor( # 定义深度值的合理范围
         [1e-7, (q75 + 1.5 * iqr).item()], 
         dtype=torch.float32, 
         device=video.device
@@ -137,7 +137,7 @@ def inference(
 
     preds, _ = _inference_with_grid(
         model=model,
-        video=video[None],
+        video=video[None], # None的作用时在最前面增加一个新的维度，也就是等价于unsqueeze(0),通常用于增加batch维度
         depths=depths[None],
         intrinsics=intrinsics[None],
         extrinsics=extrinsics[None],
@@ -147,10 +147,12 @@ def inference(
         grid_size=grid_size
     )
 
+    # 反向推理
+    # 此外，当query_point[..., 0] 不存在>0的情况时，表示所有点都是从第一帧开始的（都是默认生成的辅助网格点），正向推理就足够了
     if bidrectional and not model.bidirectional and (query_point[..., 0] > 0).any():
         preds_backward, _ = _inference_with_grid(
             model=model,
-            video=video[None].flip(dims=(1,)),
+            video=video[None].flip(dims=(1,)), # 表示在时间维度（帧序列）上翻转
             depths=depths[None].flip(dims=(1,)),
             intrinsics=intrinsics[None].flip(dims=(1,)),
             extrinsics=extrinsics[None].flip(dims=(1,)),
@@ -159,6 +161,13 @@ def inference(
             depth_roi=_depth_roi,
             grid_size=grid_size,
         )
+        # query_point的shape是[b, N, 4], query_point[..., 0]是时间索引，query_point[..., 1:]是空间坐标
+        # 有些点不是从第一帧就出现的，而是中途才出现，对于这些点，在它出现之前的帧，正向推理结果可能不准确，反向推理能更好地补全
+        # 这段代码的作用是在正向和反向推理结果之间，按时间条件选择最终的点坐标，实现前半段用反向结果，后半段用正向结果
+        # 第一个repeat将时间序列扩展到[b, T, N, 3], 第二个repeat将查询点的时间索引扩展到[b, T, N, 3], 然后进行比较时间
+        # where的条件是， 如果当前时间小于查询点的时间索引，就用反向推理的结果，否则用正向推理的结果
+        # 第一个repeat的结果按时间增长， 第二个repeat的结果保持查询点的时间索引不变，然后当前者小于后者时，结果为true, 反之为false
+        # true时用反向推理的结果， false时用正向推理的结果
         preds.coords = torch.where(
             repeat(torch.arange(T, device=video.device), 't -> b t n 3', b=1, n=N) < repeat(query_point[..., 0][None], 'b n -> b t n 3', t=T, n=N),
             preds_backward.coords.flip(dims=(1,)),
@@ -170,6 +179,7 @@ def inference(
             preds.visibs
         )
 
+    # 可见性阈值化与输出
     coords, visib_logits = preds.coords, preds.visibs
     visibs = torch.sigmoid(visib_logits) >= vis_threshold
     return coords.squeeze(), visibs.squeeze()
