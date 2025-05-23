@@ -86,9 +86,10 @@ class PointTracker3D(nn.Module):
 
         self.image_size = image_size
         self.corr_levels = corr_levels
-        self.encoder = load_encoder(config=encoder, resolution=image_size)
+        self.encoder = load_encoder(config=encoder, resolution=image_size) # 图像编码器配置
+        # 相关性特征提取器配置
         self.corr_processor = load_corr_processor(corr_feature, feat_dim=self.encoder.embedding_dim, corr_levels=corr_levels, image_size=image_size, use_local_pos_input=use_local_pos_input)
-        self.point_updater = load_point_updater(point_updater)
+        self.point_updater = load_point_updater(point_updater)  # 点更新器配置
         self.norm_mode = norm_mode.lower()
         self.norm_scale = norm_scale
         self.use_local_pos_input = use_local_pos_input
@@ -263,12 +264,19 @@ class PointTracker3D(nn.Module):
         # Mostly following cotracker3's approach
         coords = coords_init.clone()
         visibs = visibs_init.clone()
-
+        
+        # 每个窗口内进行多次迭代优化， 默认是 6 次
         for it in range(num_iters):
+            '''
+            什么是弱引用 (Weak Reference)?
+
+            通常，当我们将一个变量赋值给一个对象时（例如 my_var = my_object），我们创建了一个 "强引用" (strong reference)。只要至少有一个强引用指向一个对象，Python 的垃圾回收器 (garbage collector) 就不会回收该对象占用的内存。
+            弱引用则不同。它是一种特殊的引用，它不会阻止所引用的对象被垃圾回收。如果一个对象只剩下弱引用指向它，那么垃圾回收器就可以自由地回收该对象，并且这些弱引用会自动失效（通常会变成 None）。
+            '''
             weak_coords = weakref.ref(coords)
             weak_visibs = weakref.ref(visibs)
             
-            coords = coords.detach().clone()
+            coords = coords.detach().clone() # 创建一个新的张量，这个新张量与原始张量 coords 共享相同的数据存储，但是它从当前的计算图中“分离”了出来。
             visibs = visibs.detach().clone()
             
             if check_ref:
@@ -360,6 +368,10 @@ class PointTracker3D(nn.Module):
                     depth_roi = depth_roi.reshape(2)
                     _original_pcds.masked_fill_(original_ctx.depths[:, window_start:window_end, None] > depth_roi[1], torch.nan)
                     _original_pcds.masked_fill_(original_ctx.depths[:, window_start:window_end, None] < depth_roi[0], torch.nan)
+                # 各向异性正则化，它会为每个坐标维度计算一个独立标准差， 在不同坐标轴上具有不同的缩放因子
+                # 各向同性正则化，它会为所有坐标维度计算一个共同的标准差， 在所有坐标轴上具有相同的缩放因子
+                # 各向异性正则化适合处理：1.场景具有明显的几何约束（如室内，街道）2.不同轴向的运动范围差异很大 3.需要保持真实世界的几何关系比例
+                # 各向同性正则化适合处理：1.场景中3D运动在个方向上较为均衡，2.希望避免方向性偏置 3.需要旋转不变性
                 if self.norm_mode == "anisotropy":
                     original_ctx.mean_coords = torch.nanmean(_original_pcds, dim=(1, 3, 4), keepdim=True) # (B, T, C, H, W) -> (B, 1, C, 1, 1)
                     original_ctx.std_coords = nanstd(_original_pcds, dim=(1, 3, 4), keepdim=True) # (B, T, C, H, W) -> (B, 1, C, 1, 1)

@@ -73,6 +73,7 @@ def prepare_inputs(input_path: str, inference_res: Tuple[int, int], support_grid
     intrinsics[:, 1, :] *= (inference_res[0] - 1) / (_original_res[0] - 1)
 
     # resize & remove edges
+    # 这是一种并行数据处理方法，使用线程池来加速视频和深度图像的处理
     with ThreadPoolExecutor(num_threads) as executor:
         video_futures = [executor.submit(cv2.resize, rgb, (inference_res[1], inference_res[0]), interpolation=cv2.INTER_LINEAR) for rgb in video]
         depths_futures = [executor.submit(resize_depth_bilinear, depth, (inference_res[1], inference_res[0])) for depth in depths]
@@ -121,6 +122,7 @@ if __name__ == "__main__":
     )
 
     # Run inference
+    # 这行代码的作用是在其作用域内自动将张量和操作转换为更低精度（自动混合精度，这里是 bfloat16），以加速模型推理或训练，并减少显存占用。
     with torch.autocast("cuda", dtype=torch.bfloat16):
         coords, visibs = inference(
             model=model,
